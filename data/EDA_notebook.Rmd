@@ -1,0 +1,349 @@
+---
+title: "QTM302W: EDA on Quarterly Data for Macroeconomic Research"
+author: "Laura Wang, Sean Jeon, Yuting Chen, Kari Zhou"
+date: "2025-10-10"
+output: html_document
+---
+
+# 0. Introduction
+
+This analysis draws on the FRED-QD (Federal Reserve Economic Data -- Quarterly Data) dataset, a comprehensive macroeconomic database maintained by the Federal Reserve Bank of St. Louis. This dataset includes U.S. economy data from the Bureau of Economics Analysis (BEA) and the Bereau of Labor Statistics (BLS), including core categories such as output, consumption, investment, government spending, trade, and housing. Although the dataset covers a long time period since 1960s, we focused on data from 2000 to 2025, providing a broad and reliable foundation for examining long-run economic trends and cyclical fluctuations.
+
+The purpose of this exploratory analysis is to investigate the evolution of Gross Domestic Product (GDP) and its major components, emphasizing how domestic activity and external trade dynamics contribute to overall economic performance.
+
+To achieve this, the data are subset to focus on indicators most relevant to GDP decomposition, consumption, investment, government spending, exports, and imports. Furthermore, other side factors that relate to GDP's components such as tariff and housing, will be examined.
+
+The dataset poses minimal ethical concerns as it consists entirely of publicly available, aggregate economic statistics that contain no individual-level or proprietary information. Our analysis therefore centers on responsible interpretation, transparency in data handling, and reproducible economic insights derived from public data.
+```{r}
+renv::init()
+```
+
+```{r}
+renv::snapshot()
+```
+
+```{r setup, include=FALSE}
+# 0. Setup: Install and Load Libraries
+
+library(renv)
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+library(corrplot)
+
+library(zoo)
+```
+
+# 1. Data Loading and Cleaning
+
+We uploaded the Federal Reserve Economic Quarterly Data file titled 2025-09-QD.csv, which contains data from March 1, 1959 through September 1, 2025. We first removed the first row of the dataset because it was a non-data row. Then, instead of keeping the first column labeled "sasdate," we renamed it to "date" and converted it into a proper date format (month/day/year). Finally, we restricted our dataset to observations after January 1, 2000, focusing on data from 2000 to 2025, which will serve as the main dataset for our analysis.
+
+Cleaned dataset was renamed as "df".
+
+```{r}
+data <- read.csv("2025-09-QD.csv")
+data <- data[-1, ] # Remove the transformation codes row
+names(data)[1] <- "date"
+data$date <- as.Date(data$date, "%m/%d/%Y")
+
+# Convert relevant data columns to numeric, coercing errors to NA
+data <- data %>%
+  mutate(across(-date, ~as.numeric(as.character(.))))
+
+# Define the sample period for quarterly data
+startSample <- as.Date("2000-01-01")
+endSample   <- as.Date("2025-08-01")
+
+df <- data %>%
+  filter(date >= startSample & date <= endSample)
+```
+
+# 2. Descriptive Statistics
+
+```{r}
+vars_to_summarize <- c("GDPC1", "PCECC96", "GPDIC1", "GCEC1", "HOUST", 
+                       "MORTGAGE30US", "FEDFUNDS", "UMCSENTx", "USSTHPI", "DPIC96")
+
+get_stats <- function(x) {
+  c(
+    N = length(x) - sum(is.na(x)), # Count of non-missing values
+    Mean = mean(x, na.rm = TRUE),
+    StDev = sd(x, na.rm = TRUE),
+    Min = min(x, na.rm = TRUE),
+    Median = median(x, na.rm = TRUE),
+    Max = max(x, na.rm = TRUE)
+  )
+}
+
+summary_matrix <- sapply(df[vars_to_summarize], get_stats)
+summary_table <- t(summary_matrix)
+
+readable_names <- c("GDP", "Consumption", "Investment", "Gov. Spend", 
+                    "Housing Starts", "Mortgage Rate", "Fed Funds Rate", 
+                    "Sentiment", "House Price Idx", "Disp. Income")
+
+rownames(summary_table) <- readable_names
+
+knitr::kable(summary_table, 
+             digits = 2, 
+             caption = "Descriptive Statistics for Key Variables")
+```
+
+The dataset from 2000 to 2025 contains 102 quarterly observations for each variable.
+
+GDP averages 18,159.50 with a standard deviation of 2,755.27, showing steady growth and moderate fluctuation over time. Consumption (mean = 12,252.71) follows a similar trend but with slightly less variation. Investment and government spending average 3,088.39 and 3,408.44, respectively, with spending showing more stability than investment.
+
+Housing starts show high volatility, ranging from 525.67 to 2,120.33, reflecting the cyclical nature of the housing market. The mortgage rate averages 5.18%, while the federal funds rate averages 1.97%, highlighting periods of low interest rates after 2008 and during COVID-19. Consumer sentiment (mean = 82.42) and the house price index (mean = 406.65) both indicate overall recovery and growth since the early 2000s. Finally, disposable income averages 13,531.19, closely tracking GDP and consumption trends.
+
+Overall, the statistics show that key macroeconomic indicators moved together over the past 25 years, with notable fluctuations in housing and monetary policy variables.
+
+# 3. Feature Engineering: GDP Proportions Analysis
+
+```{r}
+df <- df %>%
+  mutate(
+    C_proportion = PCECC96 / GDPC1,
+    I_proportion = GPDIC1 / GDPC1,
+    G_proportion = GCEC1 / GDPC1,
+    X_proportion = EXPGSC1 / GDPC1,
+    M_proportion = IMPGSC1 / GDPC1,
+    NX_proportion = (EXPGSC1 - IMPGSC1) / GDPC1
+  )
+
+# Line chart to show individual trends of all components
+p_value_line_all <- ggplot(df, aes(x = date)) +
+  geom_line(aes(y = PCECC96, color = "Consumption")) +
+  geom_line(aes(y = GPDIC1, color = "Investment")) +
+  geom_line(aes(y = GCEC1, color = "Gov. Spending")) +
+  geom_line(aes(y = EXPGSC1, color = "Exports")) +
+  geom_line(aes(y = IMPGSC1, color = "Imports")) +
+  labs(title = "Total Value of GDP Components", y = "Total Value", x = "Date") +
+  scale_y_continuous(labels = scales::dollar) +
+  scale_color_manual(name = "Component", values = c("Consumption" = "blue",
+                                                    "Investment" = "red", 
+                                                    "Gov. Spending" = "green", 
+                                                    "Exports" = "orange", 
+                                                    "Imports" = "purple")) +
+  theme_minimal()
+p_value_line_all
+```
+
+```{r}
+# Stacked area chart showing C, I, G, and Net Exports
+p_proportions_area_full <- df %>%
+  dplyr::select(date, C_proportion, I_proportion, G_proportion, NX_proportion) %>%
+  pivot_longer(cols = -date, names_to = "component", values_to = "proportion") %>%
+  ggplot(aes(x = date, y = proportion, fill = component)) +
+  geom_area() +
+  labs(title = "GDP Composition (C + I + G + NX)", y = "Proportion of GDP", x = "Date") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(name = "Component", 
+                    values = c("C_proportion"="#7fc97f", "I_proportion"="#beaed4", "G_proportion"="#fdc086", "NX_proportion"="#ffff99"),
+                    labels = c("Consumption", "Gov. Spending", "Investment", "Net Exports")) +
+  theme_minimal()
+p_proportions_area_full
+```
+
+The first figure illustrates the total value of GDP components(consumption, investment, government spending, exports, and imports) from 2000 to 2025 as we set the timeframe. Consumption clearly dominates the GDP's portion, rising steadily from about \$9 trillion to over \$16 trillion, reflecting its central role in driving U.S. economic growth. Investment and government spending both trend upward but remain at lower magnitudes. Investment exhibits more cyclical movement, with sharp declines during the 2008 financial crisis and 2020 COVID-19 recession, while government spending remains relatively stable, often increasing slightly during downturns to make up the economic depression. Exports and imports both grow over time, with imports consistently exceeding exports, indicating a persistent trade deficit of the US economy.
+
+Since we saw the changing trend of GDP by date, second figure focuses on the composition of GDP as proportions. The share of consumption consistently accounts for the largest portion, roughly 65--70% of GDP, showing remarkable stability over the past 25 years. Investment and government spending together make up about 25--30%, while net exports remain negative, slightly reducing overall GDP. Despite economic shocks, the proportional structure of GDP has remained largely constant, demonstrating the long-term resilience and consumer-driven nature of the U.S. economy.
+
+# 4. Correlation Matrix
+
+```{r}
+selected_vars <- df %>%
+  dplyr:: select(GDPC1, PCECC96, GPDIC1, GCEC1, HOUST, MORTGAGE30US, FEDFUNDS, UMCSENTx, USSTHPI, DPIC96)
+
+readable_names <- c("GDP", "Consumption", "Investment", "Gov. Spend", "Housing Starts", "Mortgage Rate", "Fed Funds Rate", "Sentiment", "House Price Idx", "Disp. Income")
+
+cor_matrix <- cor(selected_vars, use = "pairwise.complete.obs")
+colnames(cor_matrix) <- readable_names
+rownames(cor_matrix) <- readable_names
+
+corrplot(cor_matrix, method = "color", 
+         type = "upper", 
+         order = "hclust", 
+         addCoef.col = "black", tl.col = "black", 
+         tl.srt = 45, diag = FALSE, 
+         number.cex = 0.75, 
+         title = "Correlation Matrix of Key Economic Variables", mar=c(0,0,0.8,0))
+```
+
+The most prominent pattern is the strong positive correlation among GDP, consumption, investment, and disposable income, all with coefficients above 0.9. This confirms that these core components of economic activity tend to rise and fall together, reflecting their shared dependence on overall economic growth. Government spending is also positively correlated with these variables, though slightly less strongly, which makes sense since fiscal policy often responds countercyclically, rising during downturns and moderating during expansions.
+
+By contrast, housing-related indicators and interest rates display weaker and sometimes negative relationships with output measures. For instance, housing starts and consumer sentiment are negatively correlated with government spending (around --0.6), implying that when government expenditure is high, often during recessions, housing activity and confidence tend to be lower. Mortgage rates and the federal funds rate show moderate positive correlations with each other (about 0.82), as expected, but are weakly related to GDP and consumption. This suggests that short-term rate changes alone do not strongly determine overall output within the period examined. These negative correlations will be explored further in the final scatterplots of the report.
+
+The correlation matrix highlights strong positive relationships among GDP, consumption, investment, and disposable income, all of which move closely together as core drivers of economic activity. Government spending also shows positive but slightly weaker correlations, reflecting its countercyclical behavior. Housing indicators and interest rates display weaker and sometimes negative links with output measures. For example, housing starts and consumer sentiment are negatively correlated with government spending, suggesting that higher spending often occurs during weaker and unstable economic periods. Mortgage and federal funds rates correlate moderately with each other but only weakly with GDP or consumption. Overall, the matrix underscores that income, consumption, and investment dominate economic fluctuations, while fiscal and monetary variables influence activity more indirectly.
+
+# 5. Analysis of Key Economics Relationships
+
+## Imports, Exports, and GDP
+
+```{r}
+ggplot(data = df, aes(x = date))+
+  geom_line(aes( y = EXPGSC1, color = "Export"))+
+  geom_line(aes(y = IMPGSC1, color = "Import"))+
+  geom_line(aes(y = GDPC1, color = "GDP"))+
+  scale_color_manual(values = c("Export" = "darkblue", 
+                                "Import" = "orange",
+                                "GDP" = "cyan3"
+                               )) +
+  annotate("rect", fill = "darkgrey", alpha = 0.5, 
+           xmin = as.Date(c("2019-01-01")), xmax = as.Date(c("2019-06-30")),
+           ymin = -Inf, ymax = Inf) +
+  annotate("rect", fill = "darkgrey", alpha = 0.5, 
+           xmin = as.Date(c("2025-04-02")), xmax = as.Date(c("2025-09-01")),
+           ymin = -Inf, ymax = Inf) +
+  labs(color = "Type",
+       title = "GDP, Imports, and Exports from Jan 2000 to Sep. 2025, based on quarterly data",
+       x = "Time (Year)",
+       y = "Billions") +
+  theme_minimal()
+```
+
+In order to further explore the key macroeconomic relationships, we created a line chart with time on the x-axis to show real exports (dark blue), real imports (orange), and real GDP (cyan) in billions of dollars from January 2000 to August 2025. The chart includes shaded grey rectangles representing two periods of tariff policy change: the trade war period from January 2019 to June 2019 and a subsequent tariff policy adjustment from April 2025 to September 2025.
+
+**Real GDP over time:**
+
+From 2000 to 2025, real GDP shows a relatively steady upward long-term trend with two notable drops, one around 2008 during the global financial crisis, and another sharp decline in 2019 during the COVID-19 pandemic. After 2020, real GDP started to recover, indicating post-pandemic recovery and continued economic growth.
+
+**Real imports over time:**
+
+Real imports also show a gradual increase from 2000 to 2025, with declines occurring around the same crisis periods. The decrease during the global financial crisis is relatively smaller, while the sharp drop in 2020 reflects the impact of tariff policy changes and a supply-chain disruption caused by the pandemic, followed by recovery after 2021.
+
+**Real exports over time:**
+
+Real exports gradually increase as well, but remain consistently below real imports, indicating that the United States maintains a trade deficit throughout the period throughout the observed timeframe.
+
+## Fed Funds Rate vs. Real Investment
+
+```{r}
+p_scatter_investment <- ggplot(df, aes(x = FEDFUNDS, y = GPDIC1)) +
+  geom_point(alpha = 0.6, color = "darkgreen") + geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Fed Funds Rate vs. Real Investment", x = "Federal Funds Rate (%)", y = "Real Investment (Billions)") + theme_minimal()
+
+p_scatter_investment
+```
+
+When we compare the federal funds rate and real investment, it only shows only a weak positive association. This suggests that investment activity remained relatively steady even as monetary policy tightened. Businesses may have continued investing despite higher rates due to strong economic fundamentals or supportive fiscal measures. The weak correlation also indicates that other factors, such as technological innovation, global demand, or corporate profitability, could be influencing investment decisions more directly than interest rates.
+
+## Consumer Sentiment vs. Real Consumption
+
+```{r}
+p_scatter_sentiment <- ggplot(df, aes(x = UMCSENTx, y = PCECC96)) +
+  geom_point(alpha = 0.6, color = "darkblue") + geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Consumer Sentiment vs. Real Consumption", x = "Consumer Sentiment Index", y = "Real Consumption (Billions)") + theme_minimal()
+
+p_scatter_sentiment
+```
+
+The relationship between consumer sentiment and real consumption displays a mild negative correlation. Although it would be reasonable to expect that more optimistic consumers spend more, the data suggest that sentiment does not always translate directly into higher consumption. One possible explanation is that sentiment often reflects broader economic expectations, such as inflation concerns or uncertainty about future income, rather than immediate spending behavior. Another interpretation is that this negative relationship might be driven by specific time periods, such as during post-crisis recoveries when consumer confidence improves faster than actual spending.
+
+## Real Disposable Income vs. Real Consumption
+
+```{r}
+p_scatter_income <- ggplot(df, aes(x = DPIC96, y = PCECC96)) +
+  geom_point(alpha = 0.6, color = "purple") + geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Real Disposable Income vs. Real Consumption", x = "Real Disposable Income (Billions)", y = "Real Consumption (Billions)") + theme_minimal()
+
+p_scatter_income
+```
+
+The relationship between real disposable income and real consumption is strong and positive, reflecting one of the most consistent macroeconomic relationships. As households' disposable income rises, their consumption increases almost proportionally, which makes intuitive sense since people tend to spend more when they earn more. This aligns with Keynesian economic theory, which states that income is the primary driver of consumption. The tight clustering of points along the regression line supports the idea that consumer spending closely tracks changes in income levels over time.
+
+Overall, these scatterplots suggest that while income and consumption are tightly connected, monetary and psychological factors such as interest rates and consumer sentiment have more complex or delayed effects on economic activity. These findings emphasize the importance of distinguishing between short-term behavioral responses and long-term structural relationships when analyzing macroeconomic data.
+
+# 6. Analysis of Residential Construction Indicators: Starts vs. Permits
+
+## New Privately Owned Housing Units Started Across Nation
+
+```{r}
+ggplot(data = df, aes(x = date))+
+  geom_line(aes(y = HOUST, color = "Nation Total")) +
+  geom_line(aes(y = HOUSTMW, color = "Midwest")) +
+  geom_line(aes(y = HOUSTNE, color = "Northeast")) +
+  geom_line(aes(y = HOUSTS, color = "South"))+
+  geom_line(aes(y = HOUSTW, color = "West"))+
+  scale_color_manual(values = c("Nation Total" = "darkblue", 
+                                "Midwest" = "orange", 
+                                "Northeast" = "red",
+                                "South" = "cyan3",
+                                "West" = "pink")) +
+  labs(color = "Region",
+       title = "New Privately Owned Housing Units Started Across Nation",
+       x = "Time (Year)",
+       y = "Units (Thousands)") +
+  theme_minimal()
+```
+
+Looking further into the analysis of residential construction indicators, we first plotted the new privately owned housing units started across the nation, broken down by region from 2000 to 2025.
+
+The national total new privately own housing units (purple) shows a sharp increase from 2005 to 2008, followed by a drastic fall in 2008 to 2009, reflecting the impact of the global financial crisis on housing. It then takes a long time to gradually recover from 2010 to 2019, but the level never returns to the 2008 peak. Another noticeable decline appears in 2019, reflecting the onset of the COVID-19 pandemic; however, this time, the market recovers before entering a period of fluctuation and mild decline.
+
+If we look at these patterns by region, the South (teal) clearly dominates in new housing starts, followed by the West (pink), which shows a rebound after 2020, and then the Midwest (orange) and the Northeast (red). This regional patterns largely reflects the difference in population growth, land availability, and economic conditions across regions. From 2000 to 2025, the South has experienced the strongest population growth in the United States potentially due to lower cost of living and favorable weather conditions, which explains why the South dominates the new privately own housing over the timeframe. In contrast, the Midwest and Northeast regions, with a relatively slower population growth, higher urban density and stricter land regulations, shows a way lower demand for new housing compare to the South and West.
+
+## Housing Started Across U.S., with 6-Month Moving Average
+
+```{r}
+df <- df %>%
+  mutate(MA_6month = zoo::rollmean(PERMIT, k = 6, fill = NA, align = "right"))
+ggplot(df, aes(x = date)) +
+  geom_line(aes(y = HOUST, color = "National Total")) +
+  geom_line(aes(y = MA_6month, color = "6-Month MA"), size = 1.2) +
+  labs(title = "Housing Started Across U.S., with 6-Month Moving Average", x = "Date", y = "Value") +
+  scale_color_manual(values = c("National Total" = "gray50", "6-Month MA" = "blue")) +
+  theme_minimal()
+
+```
+
+When we are looking at the trend of new privately owned housing units started in the United States from 2000 to 2025, the gray line represents the raw monthly data, and the blue line shows a 6-month moving average that smooths the short-term fluctuations. We found that housing starts rose sharply in the early 2000s, and reaches its peak before the 2008 global financial crisis that causes the housing market collapse. After 2010, construction slowly recovered as the economy slowly recovers from the Great Recession, and reaches another peak in 2021 to 2022 during the pandemic housing boom. However, The new privately own housing units have decreased again in 2023, which corresponds to our findings in New Privately Owned Housing Units Started across Nation plot.
+
+## Mortgage Rates vs. Housing Starts
+
+```{r}
+p_scatter_housing <- ggplot(df, aes(x = MORTGAGE30US, y = HOUST)) +
+  geom_point(alpha = 0.6, color = "darkred") + geom_smooth(method = "lm", se = FALSE, color = "black") +
+  labs(title = "Mortgage Rates vs. Housing Starts", x = "30-Year Mortgage Rate (%)", y = "Housing Starts (Thousands)") + theme_minimal()
+
+p_scatter_housing
+```
+
+When considering housing demand, mortgage rates also play a significant role. Therefore, we compared mortgage rates and housing starts and found a slightly positive trend. This result is somewhat counterintuitive because higher mortgage rates are typically associated with fewer housing starts as borrowing becomes more expensive. However, this pattern could reflect time lag effects or cyclical dynamics in the housing market. For instance, housing construction might remain strong for a period even after rates rise, especially when economic growth is robust and demand for housing remains high. It may also suggest that other factors, such as government incentives or long-term demographic demand, play a larger role than short-term interest rate fluctuations.
+
+## Housing and Government Spending Scatter Plots
+
+```{r}
+p_scatter_houst_gov <- ggplot(df, aes(x = GCEC1, y = HOUST)) +
+  geom_point(alpha = 0.7, color = "darkcyan") +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(title = "Housing Starts vs. Government Spending", x = "Real Government Spending (Billions)", y = "Housing Starts (Thousands)") +
+  theme_minimal()
+p_scatter_houst_gov
+```
+
+Next, we examined whether government spending could also affect housing activity by visualizing the relationship between real government spending and both housing starts and housing permits. A housing start, refers to the beginning of construction on a new house, while a housing permit grants a builder the legal authority to construct, alter, or demolish a residential structure.
+
+By comparing housing starts to government spending, the scatterplot suggests that real government spending and housing starts are negatively correlated. As real government spending increases, housing starts tend to decrease. One possible interpretation is that when government spending rises, it may coincide with tighter monetary policy or higher interest rates, both of which can discourage investment in construction. Another plausible explanation is the reverse causality, where housing construction slows during economic downturns, leading governments to increase spending through fiscal expansion to stabilize the economy.
+
+```{r}
+p_scatter_permit_gov <- ggplot(df, aes(x = GCEC1, y = PERMIT)) +
+  geom_point(alpha = 0.7, color = "coral") +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(title = "Housing Permits vs. Government Spending", x = "Real Government Spending (Billions)", y = "Housing Permits (Thousands)") +
+  theme_minimal()
+p_scatter_permit_gov
+```
+
+The second plot, which shows the relationship between housing permits and government spending, also indicates a similar negative correlation. Since obtaining a housing permit is a necessary step before starting construction, the decline in permits mirrors the decline in housing starts. This relationship may also reflect a substitution effect in resource allocation. When government spending increases, particularly on infrastructure or defense, it can absorb labor and materials that might otherwise be used in private housing projects.
+
+Overall, these graphs suggest that higher levels of government expenditure tend to correspond with weaker housing market indicators, not necessarily because spending directly reduces housing activity, but because fiscal expansions typically occur during periods of economic strain. These findings highlight the importance of interpreting macroeconomic relationships within their broader policy and cyclical contexts, as government spending often acts as a stabilizing force when private investment, including housing, temporarily contracts.
+
+# 7. Conclusion
+
+Overall, our exploratory analysis examines key macroeconomic indicators from January 2000 to August 2025, focusing on how GDP (consumption and government spending), trade indicators (exports and imports), mortgage rates, the federal funds rate, and the housing market interact over time. By visualizing these factors, we found that GDP, consumption, investment, and disposable income show a strong positive relationship, reflecting their crucial role in driving economic growth in the United States. In contrast, variables such as government spending, consumer sentiment, and mortgage rates showed a weak negative relationship, highlighting their countercyclical nature. Trade indicators, on the other hand, suggest that the United States consistently maintains a trade deficit and responds strongly to economic shocks, such as the global financial crisis and the COVID-19 pandemic. The analysis of housing starts showed a similar overall trend, but there is some regional variation, with the South leading due to stronger population growth and lower regulatory barriers. A notable finding was the negative correlation between government spending and housing activity, likely reflecting that fiscal expansions typically occur during economic downturns, when private investment, including housing, slows down. Looking forward, our visualization and analysis emphasized the importance of examining causality using time-series models so we can see how relationships change with notable historical events, relating regional demographic trends to real-life situations to understand the long-term housing demand for different areas, and enabling analysis on how fiscal and monetary policies influence investment cycles, and how lag effects play a role in interest rates and housing activity.
+
+# 8. Work Cited
+
+Michael W. McCracken and Serena Ng, "FRED-QD: A Quarterly Database for Macroeconomic Research," Federal Reserve Bank of St. Louis Review, First Quarter 2021, pp. 1-44. <https://doi.org/10.20955/r.103.1-44>
+
+Fred-MD and Fred-QD: Monthly and quarterly databases for Macroeconomic Research. Federal Reserve Bank of St. Louis. (n.d.). <https://www.stlouisfed.org/research/economists/mccracken/fred-databases>
